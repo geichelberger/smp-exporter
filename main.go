@@ -49,6 +49,9 @@ var uris = []string{
 	"/encoder/2/stream_enable",
 	"/encoder/3/stream_enable",
 	"/video/out/1/presets/layout/active",
+	"/streamer/rtmp/1",
+	"/streamer/rtmp/2",
+	"/streamer/rtmp/3",
 }
 
 var sources = map[string]string{
@@ -80,6 +83,9 @@ var sources = map[string]string{
 	"extron_encoder_2_stream_enabled":          "$[21].result",
 	"extron_encoder_3_stream_enabled":          "$[22].result",
 	"extron_video_out_1_layout":                "$[23].result.active_index",
+	"extron_streamer_1_rtmp":                   "$[24].result.pub_control",
+	"extron_streamer_2_rtmp":                   "$[25].result.pub_control",
+	"extron_streamer_3_rtmp":                   "$[26].result.pub_control",
 }
 
 var regex = regexp.MustCompile("[^\\.0-9]+")
