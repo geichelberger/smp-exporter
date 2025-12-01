@@ -118,25 +118,17 @@ var sources_smd101 = map[string]string{
 	"extron_xtime_date":                        `$[? @.meta.uri=="/xtime/date"].result`,
 	// smd "stopped|playing|paused"
 	"extron_play_state":                        `$[? @.meta.uri=="/player/1"].result.play_state`,
-
-	// "ch://8", oder direkt eine rtsp:// URI; Feld: "Playlist" in der WebUI
-	"extron_player_channel":                    `$[? @.meta.uri=="/player/1"].result.uri`,
-
 	// like "00:00:35.429886000"
-	// --> 2float failed: "extron_player_time":                       `$[? @.meta.uri=="/player/1"].result.time`,
 	"extron_player_time":                       `$[? @.meta.uri=="/player/1"].result.time`,
-
-	// like "rtsp://128.130.88.10/extron1"; Feld "Source:" in der WebUI; will result in =0.4 for mp4-files
-	// --> 2float fails with IP-adresses: "extron_player_track_uri":                  `$[? @.meta.uri=="/player/1"].result.track_uri`,
-
 	// -> bitrates, packets of the current stream
 	"extron_player_stream_audio_bitrate":       `$[? @.meta.uri=="/player/1/stream_statistics"].result.audio_bitrate_kbps`,
 	"extron_player_stream_video_bitrate":       `$[? @.meta.uri=="/player/1/stream_statistics"].result.video_bitrate_kbps`,
-
-	// .date 2025-11-25T16:04:53Z
+	// .date, format 2025-11-25T16:04:53Z
 	"extron_player_history_latest_date":        `$[? @.meta.uri=="/player/history/entries?count=1"].result[0].date`,
-
-	// --> 2float fails with IP-adresses: "extron_player_history_latest_uri":         `$[? @.meta.uri=="/player/history/entries?count=1"].result[0].uri`,
+	// "ch://8", oder eine (rtsp):// URI -> 2float fails with IPs
+	// # "extron_player_channel":                    `$[? @.meta.uri=="/player/1"].result.uri`,
+	// # "extron_player_history_latest_uri":         `$[? @.meta.uri=="/player/history/entries?count=1"].result[0].uri`,
+	// # "extron_player_track_uri":                  `$[? @.meta.uri=="/player/1"].result.track_uri`,
 }
 
 var sources_smp300 = map[string]string{
@@ -163,7 +155,7 @@ var sources_smp300 = map[string]string{
 	"extron_schedule_state_upcoming":           `$[? @.meta.uri=="/schedule/schedule?format=json&field=db_id,state"].result[?(@.state == 0 )].state`,
 	"extron_schedule_state_transfer_skipped":   `$[? @.meta.uri=="/schedule/schedule?format=json&field=db_id,state"].result[?(@.state == 11 )].state`,
 	"extron_schedule_state_transfer_completed": `$[? @.meta.uri=="/schedule/schedule?format=json&field=db_id,state"].result[?(@.state == 5 )].state`,
-	"extron_schedule_state_transfer_no_method": `$[? @.meta.uri=="/schedule/schedule?format=json&field=db_id,state"].result[?(@.state == 10 )].state`, //unit/location 19
+	"extron_schedule_state_transfer_no_method": `$[? @.meta.uri=="/schedule/schedule?format=json&field=db_id,state"].result[?(@.state == 10 )].state`,
 	"extron_encoder_1_stream_enabled":          `$[? @.meta.uri=="/encoder/1/stream_enable"].result`,
 	"extron_encoder_2_stream_enabled":          `$[? @.meta.uri=="/encoder/2/stream_enable"].result`,
 	"extron_encoder_3_stream_enabled":          `$[? @.meta.uri=="/encoder/3/stream_enable"].result`,
@@ -277,12 +269,12 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 	defer cookieresp.Body.Close()
 
 	if err != nil {
-		log.Printf("Response for login cookie was nil, failed: %s", err.Error())
-		http.Error(w, err.Error(), http.StatusGatewayTimeout) // TODO: is there a better http.Error ?
+		log.Printf("Request failed: %s", cookieresp.Status)
+		http.Error(w, "", cookieresp.StatusCode)
 		return
 	}
 
-	// Get the model info, which decides on SMP300 or SMP400 uris and sources
+	// Get the model info to decide on SMP300 vs SMP400 vs SMD101 uris and sources
 	target.Path = "/api/swis/resource/unit/model/name"
 	modelreq, err := http.NewRequest("GET", target.String(), nil)
 	if payload != "" {
@@ -322,7 +314,7 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Print("Model: ", model)
 
-	// Get all the information from the SM(P|D)
+	// Get the information from the SM(P|D) via one uri request
 	target.Path = "/api/swis/resources"
 	q := target.Query()
 	q.Set("_dc", strconv.FormatInt(time.Now().Unix(), 10))
@@ -371,18 +363,17 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 	timezone_offset, err := jsonpath.Get(`$[? @.meta.uri=="/xtime/timezone_offset"].result`, jsonData)
 	timezone_offset, err = jsonpath.Get("$[0]", timezone_offset)
 
-   	log.Print("hello: ", name, " ", location, " ", timezone_offset)
-
+   	log.Print("Handling: ", name, " ", location, " ", timezone_offset)
 
 	for metricName, jsonPath := range sources {
 		res, err := jsonpath.Get(jsonPath, jsonData)
 		log.Print("\nMetric: ", metricName, " Res: ", res)
 		if err != nil {
-			log.Print("Metric skipped: ", metricName, " Res: ", res)
+			log.Print("Metric skipped, jsonPath err: ", metricName, " Res: ", res)
 			continue
 		}
 		
-		if len(res.([]interface{})) == 1 { 
+		if len(res.([]interface{})) == 1 { // un-array single point values
 			log.Print("Metric is of length 1: ", metricName, " Res: ", res)
 			res, err = jsonpath.Get("$[0]",res)
 		}
@@ -391,7 +382,7 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 		case string:
 			log.Print("Metric is of type string: ", metricName, " Res: ", res)
 			str := regex.ReplaceAllString(res.(string), "")
-			log.Print("    after regex > string: ", metricName, " Res: ", str)
+			log.Print("  after regex w/o string: ", metricName, " Res: ", str)
 			if "extron_record_state" == metricName { // SMP 300 (SMP 400 does not return a string)
 				if res == "recording" {
 					str = "2"
