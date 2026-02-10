@@ -25,6 +25,25 @@ var (
 
 var uris = []string{}
 
+var uris_smd101 = []string{
+	"/unit/name", // ok
+	"/unit/temp/internal", // ok
+	"/unit/cpu_usage", // ok
+	"/unit/memory_usage", // ok
+	"/unit/usage_user", // ok
+	"/xtime/date", // ok
+	"/xtime/timezone_offset", // ok
+	"/unit/location", // ok
+	"/player/1", // ok, player status info
+	//state 0 is scheduled 11 is transfer skipped
+	//"/player/1/uri", // "ch://8", oder direkt eine rtsp:// URI; Feld: "Playlist" in der WebUI
+	//"/player/1/time", // like "00:00:35.429886000"
+	//"/player/1/track_uri", // like "rtsp://128.130.88.10/extron1"; Feld "Source:" in der WebUI
+	"/player/1/stream_statistics", // -> bitrates, packets ! of the current stream
+	"/player/history/entries?count=1", // .date
+}
+
+
 var uris_smp400 = []string{
 	"/unit/name",
 	"/unit/temp/internal",
@@ -89,6 +108,29 @@ var uris_smp300 = []string{
 
 var sources = map[string]string{}
 
+var sources_smd101 = map[string]string{
+	"extron_temp_internal":                     `$[? @.meta.uri=="/unit/temp/internal"].result`,
+	"extron_cpu_usage":                         `$[? @.meta.uri=="/unit/cpu_usage"].result[0]`,
+	"extron_ram_usage":                         `$[? @.meta.uri=="/unit/memory_usage"].result`,
+	"extron_internal_disk_used":                `$[? @.meta.uri=="/unit/usage_user"].result.used`,
+	"extron_internal_disk_total":               `$[? @.meta.uri=="/unit/usage_user"].result.total`,
+	"extron_internal_disk_free":                `$[? @.meta.uri=="/unit/usage_user"].result.available`,
+	"extron_xtime_date":                        `$[? @.meta.uri=="/xtime/date"].result`,
+	// smd "stopped|playing|paused"
+	"extron_play_state":                        `$[? @.meta.uri=="/player/1"].result.play_state`,
+	// like "00:00:35.429886000"
+	"extron_player_time":                       `$[? @.meta.uri=="/player/1"].result.time`,
+	// -> bitrates, packets of the current stream
+	"extron_player_stream_audio_bitrate":       `$[? @.meta.uri=="/player/1/stream_statistics"].result.audio_bitrate_kbps`,
+	"extron_player_stream_video_bitrate":       `$[? @.meta.uri=="/player/1/stream_statistics"].result.video_bitrate_kbps`,
+	// .date, format 2025-11-25T16:04:53Z
+	"extron_player_history_latest_date":        `$[? @.meta.uri=="/player/history/entries?count=1"].result[0].date`,
+	// "ch://8", oder eine (rtsp):// URI -> 2float fails with IPs
+	// # "extron_player_channel":                    `$[? @.meta.uri=="/player/1"].result.uri`,
+	// # "extron_player_history_latest_uri":         `$[? @.meta.uri=="/player/history/entries?count=1"].result[0].uri`,
+	// # "extron_player_track_uri":                  `$[? @.meta.uri=="/player/1"].result.track_uri`,
+}
+
 var sources_smp300 = map[string]string{
 	"extron_temp_internal":                     `$[? @.meta.uri=="/unit/temp/internal"].result`,
 	"extron_temp_board1":                       `$[? @.meta.uri=="/unit/temp/board1"].result`,
@@ -113,7 +155,7 @@ var sources_smp300 = map[string]string{
 	"extron_schedule_state_upcoming":           `$[? @.meta.uri=="/schedule/schedule?format=json&field=db_id,state"].result[?(@.state == 0 )].state`,
 	"extron_schedule_state_transfer_skipped":   `$[? @.meta.uri=="/schedule/schedule?format=json&field=db_id,state"].result[?(@.state == 11 )].state`,
 	"extron_schedule_state_transfer_completed": `$[? @.meta.uri=="/schedule/schedule?format=json&field=db_id,state"].result[?(@.state == 5 )].state`,
-	"extron_schedule_state_transfer_no_method": `$[? @.meta.uri=="/schedule/schedule?format=json&field=db_id,state"].result[?(@.state == 10 )].state`, //unit/location 19
+	"extron_schedule_state_transfer_no_method": `$[? @.meta.uri=="/schedule/schedule?format=json&field=db_id,state"].result[?(@.state == 10 )].state`,
 	"extron_encoder_1_stream_enabled":          `$[? @.meta.uri=="/encoder/1/stream_enable"].result`,
 	"extron_encoder_2_stream_enabled":          `$[? @.meta.uri=="/encoder/2/stream_enable"].result`,
 	"extron_encoder_3_stream_enabled":          `$[? @.meta.uri=="/encoder/3/stream_enable"].result`,
@@ -227,12 +269,12 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 	defer cookieresp.Body.Close()
 
 	if err != nil {
-		log.Printf("Response for login cookie was nil, failed: %s", err.Error())
-		http.Error(w, err.Error(), http.StatusGatewayTimeout) // TODO: is there a better http.Error ?
+		log.Printf("Request failed: %s", cookieresp.Status)
+		http.Error(w, "", cookieresp.StatusCode)
 		return
 	}
 
-	// Get the model info, which decides on SMP300 or SMP400 uris and sources
+	// Get the model info to decide on SMP300 vs SMP400 vs SMD101 uris and sources
 	target.Path = "/api/swis/resource/unit/model/name"
 	modelreq, err := http.NewRequest("GET", target.String(), nil)
 	if payload != "" {
@@ -260,6 +302,10 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 		sources = sources_smp400
 		uris = uris_smp400
 		log.Print("--> Using SMP400 uris and sources")
+	} else if "SMD 101" == model {
+		sources = sources_smd101
+		uris = uris_smd101
+		log.Print("--> Using SMD101 uris and sources")
 	} else {
 		sources = sources_smp300
 		uris = uris_smp300
@@ -268,7 +314,7 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Print("Model: ", model)
 
-	// Get all the information from the SMP
+	// Get the information from the SM(P|D) via one uri request
 	target.Path = "/api/swis/resources"
 	q := target.Query()
 	q.Set("_dc", strconv.FormatInt(time.Now().Unix(), 10))
@@ -317,18 +363,17 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 	timezone_offset, err := jsonpath.Get(`$[? @.meta.uri=="/xtime/timezone_offset"].result`, jsonData)
 	timezone_offset, err = jsonpath.Get("$[0]", timezone_offset)
 
-   	log.Print("hello: ", name, " ", location, " ", timezone_offset)
-
+   	log.Print("Handling: ", name, " ", location, " ", timezone_offset)
 
 	for metricName, jsonPath := range sources {
 		res, err := jsonpath.Get(jsonPath, jsonData)
-		log.Print("Metric: ", metricName, " Res: ", res)
+		log.Print("\nMetric: ", metricName, " Res: ", res)
 		if err != nil {
-			log.Print("Metric skipped: ", metricName, " Res: ", res)
+			log.Print("Metric skipped, jsonPath err: ", metricName, " Res: ", res)
 			continue
 		}
 		
-		if len(res.([]interface{})) == 1 { 
+		if len(res.([]interface{})) == 1 { // un-array single point values
 			log.Print("Metric is of length 1: ", metricName, " Res: ", res)
 			res, err = jsonpath.Get("$[0]",res)
 		}
@@ -337,7 +382,8 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 		case string:
 			log.Print("Metric is of type string: ", metricName, " Res: ", res)
 			str := regex.ReplaceAllString(res.(string), "")
-			if "extron_record_state" == metricName {
+			log.Print("  after regex w/o string: ", metricName, " Res: ", str)
+			if "extron_record_state" == metricName { // SMP 300 (SMP 400 does not return a string)
 				if res == "recording" {
 					str = "2"
 				} else if res == "paused" {
@@ -348,6 +394,22 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 					str = "-1"
 				}
 			}
+			if "extron_play_state" == metricName { // SMD 101
+				if res == "playing" {
+					str = "2"
+				} else if res == "paused" {
+					str = "1"
+				} else if res == "stopped" {
+					str = "0"
+				} else {
+					str = "-1"
+				}
+			}
+			if "extron_player_time" == metricName { // SMD 101
+				if res == "" {
+					str = "0"
+				}
+			}
 			number, err := strconv.ParseFloat(str, 64)
 			if err != nil {
 				http.Error(w, "Values could not be parsed to Float64", http.StatusInternalServerError)
@@ -355,6 +417,10 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			if "extron_xtime_date" == metricName {
 				t, _ := time.Parse("Mon, 02 Jan 2006 15:4:5 -07:00", res.(string)+" "+timezone_offset.(string))
+				number = float64(t.Unix())
+			}
+			if "extron_player_history_latest_date" == metricName {
+				t, _ := time.Parse("2006-01-02T15:4:5Z -07:00", res.(string)+" "+timezone_offset.(string))
 				number = float64(t.Unix())
 			}
 			res = number
@@ -367,12 +433,7 @@ func probeHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			log.Print("Metric is of type bool: ", metricName, " Res: ", res)
 		case []interface{}:
-			if "extron_xtime_date" == metricName {
-				t, _ := time.Parse("Mon, 02 Jan 2006 15:4:5 -07:00", v[0].(string)+" "+timezone_offset.(string))
-				res = float64(t.Unix())
-			} else {
-				res = float64(len(v))
-			}
+			res = float64(len(v))
 			log.Print("Metric is of type interface: ", metricName, " Res: ", res)
 		default:
 			res = v
